@@ -1,0 +1,15 @@
+[
+  {
+    "Name": "Docly.Api + Docly.Web",
+    "Projects": [
+      {
+        "Path": "Docly.Api\\Docly.Api.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "Docly.Web\\Docly.Web.csproj",
+        "Action": "Start"
+      }
+    ]
+  }
+]

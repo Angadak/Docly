@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: docly_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DOCLY_TEST_DB: Host=localhost;Port=5432;Database=docly_test;Username=postgres;Password=postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore Docly.slnx
+      - run: dotnet build Docly.slnx --no-restore -c Release -warnaserror
+      - run: dotnet test Docly.slnx --no-build -c Release --logger "trx;LogFileName=results.trx"
+      - name: Fail on vulnerable packages
+        run: |
+          dotnet list Docly.slnx package --vulnerable --include-transitive 2>&1 | tee vuln.txt
+          if grep -q "has the following vulnerable packages" vuln.txt; then exit 1; fi
+      - name: Docker images build
+        run: |
+          docker build -t docly-api .
+          docker build -f deploy/Dockerfile.web -t docly-web .

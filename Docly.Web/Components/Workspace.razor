@@ -1,0 +1,168 @@
+@using Docly.Web.Services
+@implements IDisposable
+@inject ApiService Api
+@inject AuthService Auth
+@inject NavigationManager Nav
+
+<div class="workspace @(sidebarCollapsed ? "sidebar-collapsed" : "")">
+    <Sidebar @ref="sidebarRef"
+             SelectedConversationId="currentConversationId"
+             OnConversationSelected="HandleSelectConversation"
+             OnConversationDeleted="HandleConversationDeleted"
+             OnConversationsLoaded="HandleConversationsLoaded"
+             OnNewConversation="HandleNewConversation"
+             OnSignOut="HandleSignOut"
+             OnOpenDocuments="() => showDocPanel = true"
+             UserEmail="@userEmail"
+             MobileOpen="mobileSidebarOpen"
+             MobileOpenChanged="(v) => mobileSidebarOpen = v"
+             CollapseChanged="(v) => sidebarCollapsed = v"
+             Documents="documents" />
+
+    <main class="main-column">
+        <header class="topbar">
+            <button class="btn-icon topbar-menu" title="Open menu" @onclick="() => mobileSidebarOpen = true">
+                <Icon Name="menu" />
+            </button>
+            @if (sidebarCollapsed)
+            {
+                <button class="btn-icon topbar-expand" title="Show sidebar" @onclick="() => sidebarCollapsed = false">
+                    <Icon Name="sidebar" />
+                </button>
+                <button class="btn-icon topbar-expand" title="New conversation" @onclick="HandleNewConversation">
+                    <Icon Name="plus" />
+                </button>
+            }
+            <div class="topbar-title">
+                <h1>@currentTitle</h1>
+            </div>
+            <div class="topbar-actions">
+                <button class="library-pill @(processingCount > 0 ? "busy" : "")" type="button" @onclick="() => showDocPanel = true">
+                    @if (processingCount > 0)
+                    {
+                        <span class="pulse-dot"></span>
+                        <span>Indexing @processingCount</span>
+                    }
+                    else
+                    {
+                        <Icon Name="files" Size="16" />
+                        <span>@readyCount ready</span>
+                    }
+                </button>
+            </div>
+        </header>
+
+        <ChatSection CurrentConversationId="currentConversationId"
+                     ReadyDocumentCount="readyCount"
+                     OnConversationStarted="HandleConversationStarted"
+                     OnMessageSent="HandleMessageSent"
+                     OnOpenDocuments="() => showDocPanel = true" />
+    </main>
+</div>
+
+<DocumentUpload ShowPanel="showDocPanel" ShowPanelChanged="(v) => showDocPanel = v"
+                Documents="documents" OnDocumentUploaded="RefreshDocuments" />
+
+@code {
+    private static readonly HashSet<string> TerminalStatuses = new() { "Completed", "Failed" };
+
+    private List<DocumentDto> documents = new();
+    private Dictionary<Guid, string> conversationTitles = new();
+    private string userEmail = string.Empty;
+    private Guid? currentConversationId = null;
+    private bool showDocPanel = false;
+    private bool mobileSidebarOpen = false;
+    private bool sidebarCollapsed = false;
+    private Sidebar? sidebarRef;
+    private PeriodicTimer? pollTimer;
+    private CancellationTokenSource pollCts = new();
+
+    private int readyCount => documents.Count(d => d.Status == "Completed");
+    private int processingCount => documents.Count(d => !TerminalStatuses.Contains(d.Status));
+
+    private string currentTitle =>
+        currentConversationId.HasValue && conversationTitles.TryGetValue(currentConversationId.Value, out var title)
+            ? title
+            : "New conversation";
+
+    protected override async Task OnInitializedAsync()
+    {
+        userEmail = await Auth.GetEmailAsync() ?? string.Empty;
+        await RefreshDocuments();
+        _ = PollDocumentsAsync(pollCts.Token);
+    }
+
+    // Documents are indexed by a background worker; keep statuses fresh while anything is in flight.
+    private async Task PollDocumentsAsync(CancellationToken token)
+    {
+        pollTimer = new PeriodicTimer(TimeSpan.FromSeconds(4));
+        try
+        {
+            while (await pollTimer.WaitForNextTickAsync(token))
+            {
+                if (processingCount > 0)
+                    await RefreshDocuments();
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task RefreshDocuments()
+    {
+        try
+        {
+            var docs = await Api.GetDocumentsAsync();
+            documents = docs ?? new();
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            await HandleSignOut();
+        }
+        catch
+        {
+            // keep previous state on transient failure
+        }
+    }
+
+    private void HandleConversationsLoaded(List<ChatConversationDto> conversations)
+    {
+        conversationTitles = conversations.ToDictionary(c => c.Id, c => c.Title);
+    }
+
+    private void HandleSelectConversation(Guid id) => currentConversationId = id;
+
+    private void HandleNewConversation() => currentConversationId = null;
+
+    private void HandleConversationDeleted(Guid id)
+    {
+        if (currentConversationId == id)
+            currentConversationId = null;
+    }
+
+    private async Task HandleConversationStarted(Guid id)
+    {
+        currentConversationId = id;
+        if (sidebarRef != null)
+            await sidebarRef.LoadConversations();
+    }
+
+    private async Task HandleMessageSent()
+    {
+        if (sidebarRef != null)
+            await sidebarRef.LoadConversations();
+    }
+
+    private async Task HandleSignOut()
+    {
+        await Auth.LogoutAsync();
+        Nav.NavigateTo("/", forceLoad: true);
+    }
+
+    public void Dispose()
+    {
+        pollCts.Cancel();
+        pollTimer?.Dispose();
+        pollCts.Dispose();
+    }
+}

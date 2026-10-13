@@ -1,0 +1,28 @@
+@host = https://localhost:7103
+@token = paste-a-token-from-login-here
+
+### Register
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "email": "you@example.com", "password": "change-me-123" }
+
+### Login
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "you@example.com", "password": "change-me-123" }
+
+### List documents
+GET {{host}}/api/documents
+Authorization: Bearer {{token}}
+
+### Ask a question
+POST {{host}}/api/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "question": "Summarize my documents." }
+
+### Health
+GET {{host}}/health

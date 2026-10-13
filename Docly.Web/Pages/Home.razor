@@ -1,0 +1,156 @@
+@page "/"
+@using Docly.Web.Services
+@inject AuthService Auth
+@inject ThemeService Theme
+@inject NavigationManager Nav
+
+<div class="auth-page">
+    <section class="auth-showcase" aria-hidden="true">
+        <div class="auth-brand">
+            <div class="brand-mark">D</div>
+            <span>Docly</span>
+        </div>
+
+        <div class="showcase-copy">
+            <h2>Your documents,<br /><em>in conversation.</em></h2>
+            <p>Upload contracts, reports and notes. Ask in plain language. Every answer cites the files it came from.</p>
+        </div>
+
+        <div class="showcase-thread">
+            <div class="demo-bubble user">What's the notice period in the lease?</div>
+            <div class="demo-answer">
+                <div class="demo-avatar">D</div>
+                <div>
+                    <p>Either party must give <strong>60 days' written notice</strong> before the end of the term.</p>
+                    <span class="source-chip"><Icon Name="file" Size="13" /> Lease agreement · 94%</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="auth-panel">
+        <button class="btn-icon theme-floating" type="button" title="Toggle theme" @onclick="Theme.ToggleAsync">
+            <Icon Name="@(Theme.CurrentTheme == "dark" ? "sun" : "moon")" />
+        </button>
+
+        <div class="auth-card">
+            <div class="auth-brand auth-brand-mobile">
+                <div class="brand-mark">D</div>
+                <span>Docly</span>
+            </div>
+
+            <h1>@(isLogin ? "Welcome back" : "Create your account")</h1>
+            <p class="auth-sub">@(isLogin ? "Sign in to pick up where you left off." : "Start asking your documents questions in a minute.")</p>
+
+            <div class="segmented" role="tablist">
+                <button class="@(isLogin ? "active" : "")" type="button" role="tab" aria-selected="@isLogin" @onclick="() => SetMode(true)">Sign in</button>
+                <button class="@(!isLogin ? "active" : "")" type="button" role="tab" aria-selected="@(!isLogin)" @onclick="() => SetMode(false)">Create account</button>
+            </div>
+
+            <EditForm Model="authModel" OnSubmit="HandleAuth">
+                <div class="field">
+                    <label for="email">Email</label>
+                    <input id="email" type="email" @bind="authModel.Email" placeholder="you@company.com" autocomplete="email" />
+                </div>
+                <div class="field">
+                    <label for="password">Password</label>
+                    <input id="password" type="password" @bind="authModel.Password" placeholder="At least 8 characters"
+                           autocomplete="@(isLogin ? "current-password" : "new-password")" />
+                </div>
+
+                @if (!string.IsNullOrEmpty(authMessage))
+                {
+                    <p class="form-message @(authSuccess ? "success" : "")" role="alert">@authMessage</p>
+                }
+
+                <button class="btn btn-primary btn-full" type="submit" disabled="@isSubmitting">
+                    @if (isSubmitting)
+                    {
+                        <span class="spinner"></span>
+                    }
+                    else
+                    {
+                        @(isLogin ? "Sign in" : "Create account")
+                    }
+                </button>
+            </EditForm>
+
+            <p class="auth-footnote">Answers come only from the files you upload.</p>
+        </div>
+    </section>
+</div>
+
+@code {
+    private bool isLogin = true;
+    private string authMessage = string.Empty;
+    private bool authSuccess = false;
+    private bool isSubmitting = false;
+    private AuthModel authModel = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Theme.InitializeAsync();
+        if (await Auth.IsAuthenticatedAsync())
+        {
+            Nav.NavigateTo("/chat");
+        }
+    }
+
+    private void SetMode(bool login)
+    {
+        isLogin = login;
+        authMessage = string.Empty;
+        authSuccess = false;
+    }
+
+    private async Task HandleAuth()
+    {
+        authMessage = string.Empty;
+        authSuccess = false;
+
+        if (string.IsNullOrWhiteSpace(authModel.Email) || string.IsNullOrWhiteSpace(authModel.Password))
+        {
+            authMessage = "Enter your email and password.";
+            return;
+        }
+
+        if (!isLogin && authModel.Password.Length < 8)
+        {
+            authMessage = "Password must be at least 8 characters.";
+            return;
+        }
+
+        isSubmitting = true;
+        try
+        {
+            var response = isLogin
+                ? await Auth.LoginAsync(authModel.Email, authModel.Password)
+                : await Auth.RegisterAsync(authModel.Email, authModel.Password);
+
+            if (response != null)
+            {
+                authSuccess = true;
+                authMessage = "Signed in. Opening your workspace…";
+                Nav.NavigateTo("/chat", forceLoad: true);
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            authMessage = isLogin ? "Incorrect email or password." : "Could not create the account.";
+        }
+        catch (Exception ex)
+        {
+            authMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private class AuthModel
+    {
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+    }
+}

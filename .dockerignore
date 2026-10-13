@@ -1,0 +1,12 @@
+.git/
+.vs/
+.github/
+.claude/
+**/bin/
+**/obj/
+**/*.user
+artifacts/
+uploaded-files/
+docs/
+*.md
+.env

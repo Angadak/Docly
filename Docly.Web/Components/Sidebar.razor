@@ -1,0 +1,211 @@
+@using Docly.Web.Services
+@inject ApiService Api
+@inject ThemeService Theme
+
+<div class="sidebar-scrim @(MobileOpen ? "open" : "")" @onclick="() => MobileOpenChanged.InvokeAsync(false)"></div>
+
+<aside class="sidebar @(MobileOpen ? "mobile-open" : "")">
+    <div class="sidebar-top">
+        <div class="sidebar-brand">
+            <div class="brand-mark">D</div>
+            <span>Docly</span>
+        </div>
+        <button class="btn-icon sidebar-collapse" title="Hide sidebar" @onclick="() => CollapseChanged.InvokeAsync(true)">
+            <Icon Name="sidebar" />
+        </button>
+        <button class="btn-icon sidebar-close" title="Close menu" @onclick="() => MobileOpenChanged.InvokeAsync(false)">
+            <Icon Name="x" />
+        </button>
+    </div>
+
+    <button class="new-chat-btn" type="button" @onclick="HandleNewChat">
+        <Icon Name="plus" Size="16" />
+        <span>New conversation</span>
+    </button>
+
+    <label class="sidebar-search">
+        <Icon Name="search" Size="15" />
+        <input type="text" placeholder="Search chats" value="@searchQuery" @oninput="HandleSearch" />
+    </label>
+
+    <nav class="sidebar-scroll" aria-label="Conversations">
+        @if (isLoadingConversations)
+        {
+            @for (var i = 0; i < 5; i++)
+            {
+                <div class="skeleton-row" style="width:@(60 + (i * 7) % 30)%"></div>
+            }
+        }
+        else if (filteredConversations.Count == 0)
+        {
+            <div class="sidebar-empty">
+                <Icon Name="message" Size="20" />
+                <p>@(string.IsNullOrWhiteSpace(searchQuery) ? "Your conversations will appear here." : "No chats match your search.")</p>
+            </div>
+        }
+        else
+        {
+            @foreach (var group in GroupedConversations)
+            {
+                <div class="sidebar-group-label">@group.Key</div>
+                @foreach (var conv in group.Value)
+                {
+                    var isPendingDelete = pendingDeleteId == conv.Id;
+                    <div class="conv-item @(conv.Id == SelectedConversationId ? "active" : "") @(isPendingDelete ? "confirming" : "")"
+                         @onclick="() => SelectConversation(conv.Id)" title="@conv.Title">
+                        <span class="conv-title">@conv.Title</span>
+                        @if (isPendingDelete)
+                        {
+                            <button class="conv-confirm" title="Confirm delete" @onclick="() => DeleteConversation(conv.Id)" @onclick:stopPropagation="true">Delete</button>
+                            <button class="conv-action" title="Cancel" @onclick="() => pendingDeleteId = null" @onclick:stopPropagation="true"><Icon Name="x" Size="14" /></button>
+                        }
+                        else
+                        {
+                            <button class="conv-action" title="Delete conversation" @onclick="() => pendingDeleteId = conv.Id" @onclick:stopPropagation="true"><Icon Name="trash" Size="14" /></button>
+                        }
+                    </div>
+                }
+            }
+        }
+    </nav>
+
+    <button class="sidebar-library" type="button" @onclick="() => OnOpenDocuments.InvokeAsync()">
+        <Icon Name="files" Size="16" />
+        <span>Library</span>
+        <span class="count-pill">@Documents.Count</span>
+    </button>
+
+    <div class="sidebar-footer">
+        <div class="avatar">@InitialLetter</div>
+        <div class="account-email" title="@UserEmail">@UserEmail</div>
+        <button class="btn-icon" title="Toggle theme" @onclick="Theme.ToggleAsync">
+            <Icon Name="@(Theme.CurrentTheme == "dark" ? "sun" : "moon")" Size="17" />
+        </button>
+        <button class="btn-icon" title="Sign out" @onclick="() => OnSignOut.InvokeAsync()">
+            <Icon Name="logout" Size="17" />
+        </button>
+    </div>
+</aside>
+
+@code {
+    [Parameter] public Guid? SelectedConversationId { get; set; }
+    [Parameter] public EventCallback<Guid> OnConversationSelected { get; set; }
+    [Parameter] public EventCallback<Guid> OnConversationDeleted { get; set; }
+    [Parameter] public EventCallback<List<ChatConversationDto>> OnConversationsLoaded { get; set; }
+    [Parameter] public EventCallback OnNewConversation { get; set; }
+    [Parameter] public EventCallback OnSignOut { get; set; }
+    [Parameter] public EventCallback OnOpenDocuments { get; set; }
+    [Parameter] public string UserEmail { get; set; } = string.Empty;
+    [Parameter] public bool MobileOpen { get; set; }
+    [Parameter] public EventCallback<bool> MobileOpenChanged { get; set; }
+    [Parameter] public EventCallback<bool> CollapseChanged { get; set; }
+    [Parameter] public List<DocumentDto> Documents { get; set; } = new();
+
+    private List<ChatConversationDto> conversations = new();
+    private List<ChatConversationDto> filteredConversations = new();
+    private string searchQuery = string.Empty;
+    private bool isLoadingConversations = true;
+    private Guid? pendingDeleteId;
+
+    private string InitialLetter => string.IsNullOrEmpty(UserEmail) ? "?" : UserEmail[0].ToString().ToUpperInvariant();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConversations();
+    }
+
+    public async Task LoadConversations()
+    {
+        try
+        {
+            var convs = await Api.GetConversationsAsync();
+            conversations = convs ?? new();
+            ApplyFilter();
+            await OnConversationsLoaded.InvokeAsync(conversations);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            await OnSignOut.InvokeAsync();
+        }
+        catch
+        {
+            // keep the existing list on a transient failure
+        }
+        finally
+        {
+            isLoadingConversations = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ApplyFilter()
+    {
+        var q = searchQuery.Trim().ToLowerInvariant();
+        filteredConversations = conversations
+            .Where(c => q.Length == 0 || c.Title.ToLowerInvariant().Contains(q) || c.Tags.Any(t => t.Contains(q)))
+            .OrderByDescending(c => c.UpdatedAtUtc)
+            .ToList();
+    }
+
+    // Group by the viewer's local day, not UTC, so "Today" matches their clock.
+    private List<KeyValuePair<string, List<ChatConversationDto>>> GroupedConversations
+    {
+        get
+        {
+            var today = DateTime.Now.Date;
+            return filteredConversations
+                .GroupBy(c =>
+                {
+                    var date = DateTime.SpecifyKind(c.UpdatedAtUtc, DateTimeKind.Utc).ToLocalTime().Date;
+                    if (date == today) return "Today";
+                    if (date == today.AddDays(-1)) return "Yesterday";
+                    if (date >= today.AddDays(-7)) return "Previous 7 days";
+                    if (date >= today.AddDays(-30)) return "Previous 30 days";
+                    return "Older";
+                })
+                .Select(g => new KeyValuePair<string, List<ChatConversationDto>>(g.Key, g.ToList()))
+                .ToList();
+        }
+    }
+
+    private void HandleSearch(ChangeEventArgs e)
+    {
+        searchQuery = e.Value?.ToString() ?? string.Empty;
+        ApplyFilter();
+    }
+
+    private async Task SelectConversation(Guid id)
+    {
+        pendingDeleteId = null;
+        await OnConversationSelected.InvokeAsync(id);
+        await MobileOpenChanged.InvokeAsync(false);
+    }
+
+    private async Task HandleNewChat()
+    {
+        await OnNewConversation.InvokeAsync();
+        await MobileOpenChanged.InvokeAsync(false);
+    }
+
+    private async Task DeleteConversation(Guid id)
+    {
+        pendingDeleteId = null;
+        try
+        {
+            if (await Api.DeleteConversationAsync(id))
+            {
+                conversations.RemoveAll(c => c.Id == id);
+                ApplyFilter();
+                await OnConversationDeleted.InvokeAsync(id);
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            await OnSignOut.InvokeAsync();
+        }
+        catch
+        {
+            // leave the item in place; the next refresh will reconcile
+        }
+    }
+}

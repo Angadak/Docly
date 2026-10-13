@@ -1,0 +1,289 @@
+@using Docly.Web.Services
+@inject ApiService Api
+@inject IJSRuntime JS
+
+<div class="panel-scrim @(ShowPanel ? "open" : "")" @onclick="ClosePanel"></div>
+
+<aside class="doc-panel @(ShowPanel ? "open" : "")" aria-labelledby="doc-panel-title" aria-hidden="@(!ShowPanel)">
+    <div class="doc-panel-header">
+        <div>
+            <h2 id="doc-panel-title">Library</h2>
+            <p>Docly answers using only these files.</p>
+        </div>
+        <button class="btn-icon" title="Close" @onclick="ClosePanel"><Icon Name="x" /></button>
+    </div>
+
+    <div class="doc-panel-body">
+        <div id="upload-dropzone" class="upload-dropzone @(isDragOver ? "drag-over" : "") @(selectedFile != null ? "has-file" : "")"
+             @ondragover:preventDefault="true" @ondragenter="() => isDragOver = true"
+             @ondragleave="() => isDragOver = false" @ondrop="() => isDragOver = false" @ondrop:preventDefault="true">
+            <InputFile id="document-file" accept=".pdf,.docx,.txt" OnChange="OnFileSelected" class="sr-only" />
+            <label for="document-file">
+                @if (selectedFile is null)
+                {
+                    <span class="upload-icon"><Icon Name="upload" Size="22" /></span>
+                    <strong>Drop a file or <u>browse</u></strong>
+                    <small>PDF, DOCX or TXT · up to 25 MB</small>
+                }
+                else
+                {
+                    <span class="file-type @FileType(selectedFile.Name)">@FileType(selectedFile.Name)</span>
+                    <strong class="truncate">@selectedFile.Name</strong>
+                    <small>@FormatSize(selectedFile.Size) · click to change</small>
+                }
+            </label>
+        </div>
+
+        @if (selectedFile != null)
+        {
+            <div class="upload-fields">
+                <input type="text" placeholder="Title" maxlength="200" @bind="uploadTitle" @bind:event="oninput" aria-label="Document title" />
+                <button class="btn btn-primary" type="button" disabled="@(isUploading || string.IsNullOrWhiteSpace(uploadTitle))" @onclick="HandleUpload">
+                    @if (isUploading)
+                    {
+                        <span class="spinner"></span>
+                    }
+                    else
+                    {
+                        <span>Add to library</span>
+                    }
+                </button>
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(uploadMessage))
+        {
+            <p class="form-message @(uploadSuccess ? "success" : "")" role="status">@uploadMessage</p>
+        }
+
+        <div class="doc-list">
+            <div class="doc-list-heading">
+                <span>Files</span>
+                <span class="count-pill">@Documents.Count</span>
+            </div>
+
+            @if (Documents.Count == 0)
+            {
+                <div class="doc-empty">
+                    <Icon Name="files" Size="22" />
+                    <p>No documents yet.</p>
+                </div>
+            }
+
+            @foreach (var doc in Documents)
+            {
+                var step = StatusStep(doc.Status);
+                <div class="doc-card @StatusClass(doc.Status)">
+                    <span class="file-type @FileType(doc.Filename)">@FileType(doc.Filename)</span>
+                    <div class="doc-card-info">
+                        <span class="doc-card-title" title="@doc.Title">@doc.Title</span>
+                        <span class="doc-card-meta">
+                            @if (doc.Status == "Failed")
+                            {
+                                <span title="@doc.ProcessingError">Processing failed</span>
+                            }
+                            else
+                            {
+                                <span>@GetStatusLabel(doc.Status)</span>
+                                @if (doc.FileSizeBytes > 0)
+                                {
+                                    <span class="dot">·</span><span>@FormatSize(doc.FileSizeBytes)</span>
+                                }
+                            }
+                        </span>
+                        @if (step is > 0 and < 5)
+                        {
+                            <div class="progress"><span style="width:@(step * 20)%"></span></div>
+                        }
+                    </div>
+                    <div class="doc-card-actions">
+                        @if (doc.Status == "Completed")
+                        {
+                            <span class="ready-check" title="Ready"><Icon Name="check" Size="14" StrokeWidth="2.4" /></span>
+                        }
+                        @if (doc.Status == "Failed")
+                        {
+                            <button class="btn-icon btn-icon-sm" title="Retry processing" disabled="@(busyDocumentId == doc.Id)" @onclick="() => Retry(doc.Id)">
+                                <Icon Name="refresh" Size="15" />
+                            </button>
+                        }
+                        @if (pendingDeleteId == doc.Id)
+                        {
+                            <button class="conv-confirm" disabled="@(busyDocumentId == doc.Id)" @onclick="() => Delete(doc.Id)">Delete</button>
+                            <button class="btn-icon btn-icon-sm" title="Cancel" @onclick="() => pendingDeleteId = null"><Icon Name="x" Size="14" /></button>
+                        }
+                        else
+                        {
+                            <button class="btn-icon btn-icon-sm doc-delete" title="Delete document" @onclick="() => pendingDeleteId = doc.Id">
+                                <Icon Name="trash" Size="15" />
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</aside>
+
+@code {
+    private const long MaxBytes = 25 * 1024 * 1024;
+
+    [Parameter] public bool ShowPanel { get; set; }
+    [Parameter] public EventCallback<bool> ShowPanelChanged { get; set; }
+    [Parameter] public List<DocumentDto> Documents { get; set; } = new();
+    [Parameter] public EventCallback OnDocumentUploaded { get; set; }
+
+    private string uploadTitle = string.Empty;
+    private IBrowserFile? selectedFile = null;
+    private string uploadMessage = string.Empty;
+    private bool uploadSuccess = false;
+    private bool isUploading = false;
+    private bool isDragOver = false;
+    private Guid? pendingDeleteId;
+    private Guid? busyDocumentId;
+
+    private async Task Delete(Guid id)
+    {
+        busyDocumentId = id;
+        try
+        {
+            await Api.DeleteDocumentAsync(id);
+            uploadMessage = string.Empty;
+            await OnDocumentUploaded.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            uploadMessage = ex.Message;
+            uploadSuccess = false;
+        }
+        finally
+        {
+            pendingDeleteId = null;
+            busyDocumentId = null;
+        }
+    }
+
+    private async Task Retry(Guid id)
+    {
+        busyDocumentId = id;
+        try
+        {
+            await Api.RetryDocumentAsync(id);
+            uploadMessage = string.Empty;
+            await OnDocumentUploaded.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            uploadMessage = ex.Message;
+            uploadSuccess = false;
+        }
+        finally
+        {
+            busyDocumentId = null;
+        }
+    }
+
+    private async Task ClosePanel() => await ShowPanelChanged.InvokeAsync(false);
+
+    private void OnFileSelected(InputFileChangeEventArgs e)
+    {
+        isDragOver = false;
+        uploadMessage = string.Empty;
+        selectedFile = e.File;
+
+        if (selectedFile.Size > MaxBytes)
+        {
+            uploadMessage = "That file is larger than 25 MB.";
+            uploadSuccess = false;
+            selectedFile = null;
+            return;
+        }
+
+        uploadTitle = Path.GetFileNameWithoutExtension(selectedFile.Name);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try { await JS.InvokeVoidAsync("doclyDom.wireDropZone", "upload-dropzone", "document-file"); }
+            catch { /* drag-and-drop is a progressive enhancement, click-to-browse still works */ }
+        }
+    }
+
+    private async Task HandleUpload()
+    {
+        if (selectedFile == null || string.IsNullOrWhiteSpace(uploadTitle))
+            return;
+
+        isUploading = true;
+        uploadMessage = string.Empty;
+
+        try
+        {
+            await using var stream = selectedFile.OpenReadStream(MaxBytes);
+            var result = await Api.UploadDocumentAsync(uploadTitle.Trim(), stream, selectedFile.Name, selectedFile.ContentType);
+
+            if (result != null)
+            {
+                uploadMessage = "Added. Indexing starts in a few seconds.";
+                uploadSuccess = true;
+                uploadTitle = string.Empty;
+                selectedFile = null;
+                await OnDocumentUploaded.InvokeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            uploadMessage = ex.Message;
+            uploadSuccess = false;
+        }
+        finally
+        {
+            isUploading = false;
+        }
+    }
+
+    private static string FileType(string? name) => Path.GetExtension(name ?? string.Empty).TrimStart('.').ToUpperInvariant() switch
+    {
+        "PDF" => "PDF",
+        "DOCX" => "DOCX",
+        "TXT" => "TXT",
+        _ => "DOC"
+    };
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024.0:0} KB",
+        _ => $"{bytes / (1024.0 * 1024):0.0} MB"
+    };
+
+    private static int StatusStep(string status) => status switch
+    {
+        "PendingExtraction" => 1,
+        "Extracting" => 2,
+        "Chunking" => 3,
+        "Embedding" => 4,
+        "Completed" => 5,
+        _ => 0
+    };
+
+    private static string StatusClass(string status) => status switch
+    {
+        "Completed" => "ready",
+        "Failed" => "failed",
+        _ => "processing"
+    };
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "PendingExtraction" => "Queued",
+        "Extracting" => "Reading",
+        "Chunking" => "Splitting into passages",
+        "Embedding" => "Building search index",
+        "Completed" => "Ready",
+        "Failed" => "Processing failed",
+        _ => status
+    };
+}

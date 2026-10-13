@@ -1,0 +1,14 @@
+@inherits LayoutComponentBase
+@using Docly.Web.Services
+@inject ThemeService Theme
+
+<div class="app-shell">
+    @Body
+</div>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        await Theme.InitializeAsync();
+    }
+}

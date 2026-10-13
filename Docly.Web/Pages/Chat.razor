@@ -1,0 +1,28 @@
+@page "/chat"
+@using Docly.Web.Services
+@inject AuthService Auth
+@inject NavigationManager Nav
+
+@if (isChecking)
+{
+    <div class="boot-screen"><div class="brand-mark brand-mark-lg">D</div><div class="boot-bar"><span></span></div></div>
+}
+else if (isAuthenticated)
+{
+    <Workspace />
+}
+
+@code {
+    private bool isChecking = true;
+    private bool isAuthenticated = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        isAuthenticated = await Auth.IsAuthenticatedAsync();
+        isChecking = false;
+        if (!isAuthenticated)
+        {
+            Nav.NavigateTo("/", forceLoad: false);
+        }
+    }
+}

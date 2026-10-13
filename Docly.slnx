@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="Docly.Api/Docly.Api.csproj" Id="0f264bdb-9f05-445e-872e-16db0a7d4e41" />
+  <Project Path="Docly.App.Tests/Docly.App.Tests.csproj" Id="3456c94f-6f4a-4408-a632-7051e7554836" />
+  <Project Path="Docly.App/Docly.App.csproj" Id="342ce8b2-b246-4714-a7f3-c767fc3bc7b5" />
+  <Project Path="Docly.Domain/Docly.Domain.csproj" />
+  <Project Path="Docly.Infra.Tests/Docly.Infra.Tests.csproj" Id="27507306-3142-41e1-a19d-d4fc7e9ffc3f" />
+  <Project Path="Docly.Infra/Docly.Infra.csproj" Id="0dd9e1c6-5cd2-450a-a84b-61a69d5535cf" />
+  <Project Path="Docly.Web/Docly.Web.csproj" />
+</Solution>

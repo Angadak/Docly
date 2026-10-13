@@ -1,0 +1,405 @@
+@using Docly.Web.Services
+@implements IDisposable
+@inject ApiService Api
+@inject IJSRuntime JS
+
+<div class="chat-column">
+    <div class="chat-scroll" @ref="scrollRef">
+        @if (isLoadingHistory)
+        {
+            <div class="thread">
+                <div class="skeleton-bubble right"></div>
+                <div class="skeleton-lines"><span></span><span></span><span style="width:60%"></span></div>
+            </div>
+        }
+        else if (messages.Count == 0)
+        {
+            <div class="welcome">
+                <div class="welcome-mark"><Icon Name="sparkle" Size="26" StrokeWidth="1.5" /></div>
+                <h2>@Greeting</h2>
+                <p>
+                    @if (ReadyDocumentCount > 0)
+                    {
+                        @($"Ask anything about your {ReadyDocumentCount} indexed document{(ReadyDocumentCount == 1 ? "" : "s")}.")
+                    }
+                    else
+                    {
+                        <span>Add a document to your library, then ask it anything.</span>
+                    }
+                </p>
+
+                @if (ReadyDocumentCount == 0)
+                {
+                    <button class="btn btn-primary welcome-cta" type="button" @onclick="() => OnOpenDocuments.InvokeAsync()">
+                        <Icon Name="upload" Size="16" /> Upload a document
+                    </button>
+                }
+
+                <div class="suggestions">
+                    @foreach (var s in Suggestions)
+                    {
+                        <button type="button" class="suggestion" @onclick="() => SetQuestion(s.Prompt)">
+                            <span class="suggestion-icon"><Icon Name="@s.Icon" Size="16" /></span>
+                            <span class="suggestion-title">@s.Title</span>
+                            <span class="suggestion-sub">@s.Subtitle</span>
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+        else
+        {
+            <div class="thread">
+                @foreach (var msg in messages)
+                {
+                    if (msg.Role == "user")
+                    {
+                        <div class="msg msg-user">
+                            <div class="bubble">@msg.Content</div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="msg msg-assistant @(msg.IsError ? "is-error" : "")">
+                            <div class="msg-avatar">@(msg.IsError ? "!" : "D")</div>
+                            <div class="msg-body">
+                                @if (msg.IsError)
+                                {
+                                    <div class="error-card">
+                                        <Icon Name="alert" Size="16" />
+                                        <span>@msg.Content</span>
+                                        @if (msg.RetryQuestion != null)
+                                        {
+                                            <button type="button" class="btn btn-ghost btn-sm" @onclick="() => Retry(msg)"><Icon Name="refresh" Size="14" /> Retry</button>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="prose">@MarkdownRenderer.Render(msg.Content)</div>
+
+                                    @if (msg.SourceDocuments?.Count > 0)
+                                    {
+                                        <div class="sources">
+                                            <span class="sources-label">Sources</span>
+                                            @foreach (var source in DistinctSources(msg.SourceDocuments))
+                                            {
+                                                <span class="source-chip" title="@source.DocumentTitle">
+                                                    <Icon Name="file" Size="13" />
+                                                    <span class="source-name">@(source.DocumentTitle ?? "Document")</span>
+                                                    @if (source.SimilarityScore.HasValue)
+                                                    {
+                                                        <span class="score">@Math.Round(source.SimilarityScore.Value * 100)%</span>
+                                                    }
+                                                </span>
+                                            }
+                                        </div>
+                                    }
+
+                                    <div class="msg-actions">
+                                        <button type="button" class="btn-icon btn-icon-sm" title="Copy answer" @onclick="() => Copy(msg)">
+                                            <Icon Name="@(msg.Copied ? "check" : "copy")" Size="15" />
+                                        </button>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+
+                @if (isSending)
+                {
+                    <div class="msg msg-assistant">
+                        <div class="msg-avatar thinking">D</div>
+                        <div class="msg-body">
+                            <div class="thinking-line">
+                                <span class="shimmer-text">@thinkingLabel</span>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="composer-dock">
+        <form class="composer @(isSending ? "busy" : "")" @onsubmit="HandleSubmit">
+            <button type="button" class="btn-icon composer-attach" title="Manage documents" @onclick="() => OnOpenDocuments.InvokeAsync()">
+                <Icon Name="paperclip" />
+            </button>
+            <label class="sr-only" for="question">Ask a question</label>
+            <textarea id="question" @ref="textareaRef" value="@currentQuestion"
+                      @oninput="HandleTextareaInput" @onkeydown="HandleKeyDown"
+                      placeholder="Ask about your documents…" rows="1"></textarea>
+            @if (isSending)
+            {
+                <button class="composer-send stop" type="button" title="Stop" @onclick="Stop"><Icon Name="stop" Size="16" /></button>
+            }
+            else
+            {
+                <button class="composer-send" type="submit" disabled="@string.IsNullOrWhiteSpace(currentQuestion)" title="Send (Enter)">
+                    <Icon Name="send" Size="18" StrokeWidth="2.2" />
+                </button>
+            }
+        </form>
+        <p class="composer-hint">Docly answers only from your library and can make mistakes. Check the sources.</p>
+    </div>
+</div>
+
+@code {
+    [Parameter] public Guid? CurrentConversationId { get; set; }
+    [Parameter] public int ReadyDocumentCount { get; set; }
+    [Parameter] public EventCallback<Guid> OnConversationStarted { get; set; }
+    [Parameter] public EventCallback OnMessageSent { get; set; }
+    [Parameter] public EventCallback OnOpenDocuments { get; set; }
+
+    private record Suggestion(string Icon, string Title, string Subtitle, string Prompt);
+
+    private static readonly Suggestion[] Suggestions =
+    {
+        new("list", "Summarize", "the key points across my files", "Summarize the key points in my documents."),
+        new("calendar", "Find deadlines", "dates, renewals and due items", "What are the most important deadlines or dates mentioned?"),
+        new("lightbulb", "Recommendations", "decisions and next steps", "What decisions or recommendations are mentioned?"),
+        new("scale", "Risks & obligations", "what I'm committed to", "What obligations, risks or liabilities are described?"),
+    };
+
+    private static readonly string[] ThinkingSteps =
+    {
+        "Searching your documents…",
+        "Reading the most relevant passages…",
+        "Writing an answer…"
+    };
+
+    private List<MessageDisplay> messages = new();
+    private string currentQuestion = string.Empty;
+    private bool isSending;
+    private bool isLoadingHistory;
+    private string thinkingLabel = ThinkingSteps[0];
+    private ElementReference scrollRef;
+    private ElementReference textareaRef;
+    private Guid? loadedConversationId;
+    private Guid? activeConversationId;
+    private CancellationTokenSource? sendCts;
+
+    private static string Greeting => DateTime.Now.Hour switch
+    {
+        < 12 => "Good morning",
+        < 18 => "Good afternoon",
+        _ => "Good evening"
+    };
+
+    private class MessageDisplay
+    {
+        public string Role { get; set; } = string.Empty;
+        public string Content { get; set; } = string.Empty;
+        public List<SourceDoc>? SourceDocuments { get; set; }
+        public bool IsError { get; set; }
+        public string? RetryQuestion { get; set; }
+        public bool Copied { get; set; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try { await JS.InvokeVoidAsync("doclyDom.wireComposer", textareaRef); } catch { }
+        if (firstRender)
+        {
+            try { await JS.InvokeVoidAsync("doclyDom.focus", textareaRef); } catch { }
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CurrentConversationId == loadedConversationId)
+            return;
+
+        // A conversation this component just created is already on screen — don't reload it.
+        if (CurrentConversationId.HasValue && CurrentConversationId == activeConversationId)
+        {
+            loadedConversationId = CurrentConversationId;
+            return;
+        }
+
+        sendCts?.Cancel();
+        loadedConversationId = CurrentConversationId;
+        activeConversationId = CurrentConversationId;
+
+        if (CurrentConversationId.HasValue)
+        {
+            await LoadConversationMessages(CurrentConversationId.Value);
+        }
+        else
+        {
+            messages = new();
+        }
+    }
+
+    private async Task LoadConversationMessages(Guid conversationId)
+    {
+        isLoadingHistory = true;
+        messages = new();
+        StateHasChanged();
+        try
+        {
+            var msgs = await Api.GetMessagesAsync(conversationId);
+            if (conversationId != loadedConversationId)
+                return; // user switched again while loading
+
+            messages = msgs?.ConvertAll(m => new MessageDisplay
+            {
+                Role = m.Role,
+                Content = m.Content,
+                SourceDocuments = m.SourceDocuments
+            }) ?? new();
+        }
+        catch (Exception ex)
+        {
+            messages = new() { new MessageDisplay { Role = "assistant", IsError = true, Content = $"Couldn't load this conversation. {ex.Message}" } };
+        }
+        finally
+        {
+            isLoadingHistory = false;
+        }
+        StateHasChanged();
+        await ScrollToEnd(smooth: false);
+    }
+
+    private Task HandleSubmit() => Send(currentQuestion);
+
+    private async Task Send(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || isSending)
+            return;
+
+        var question = text.Trim();
+        currentQuestion = string.Empty;
+        await ResizeTextarea();
+
+        messages.Add(new MessageDisplay { Role = "user", Content = question });
+        isSending = true;
+        sendCts = new CancellationTokenSource();
+        var token = sendCts.Token;
+        _ = CycleThinkingLabel(token);
+        StateHasChanged();
+        await ScrollToEnd();
+
+        try
+        {
+            var response = await Api.AskQuestionAsync(question, activeConversationId, token);
+            if (response != null)
+            {
+                if (activeConversationId is null)
+                {
+                    activeConversationId = response.ConversationId;
+                    await OnConversationStarted.InvokeAsync(response.ConversationId);
+                }
+
+                messages.Add(new MessageDisplay
+                {
+                    Role = "assistant",
+                    Content = string.IsNullOrWhiteSpace(response.Answer) ? "I couldn't generate an answer." : response.Answer,
+                    SourceDocuments = response.SourceChunks?.ConvertAll(s => new SourceDoc(s.DocumentId, s.DocumentTitle, s.SimilarityScore))
+                });
+
+                await OnMessageSent.InvokeAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            messages.Add(new MessageDisplay { Role = "assistant", IsError = true, Content = "Stopped.", RetryQuestion = question });
+        }
+        catch (Exception ex)
+        {
+            messages.Add(new MessageDisplay { Role = "assistant", IsError = true, Content = ex.Message, RetryQuestion = question });
+            // The API may have stored the conversation before failing — keep the sidebar in sync.
+            await OnMessageSent.InvokeAsync();
+        }
+        finally
+        {
+            isSending = false;
+            sendCts?.Dispose();
+            sendCts = null;
+            StateHasChanged();
+            await ScrollToEnd();
+        }
+    }
+
+    private async Task CycleThinkingLabel(CancellationToken token)
+    {
+        try
+        {
+            for (var i = 0; i < ThinkingSteps.Length && isSending; i++)
+            {
+                thinkingLabel = ThinkingSteps[i];
+                await InvokeAsync(StateHasChanged);
+                await Task.Delay(2200, token);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void Stop() => sendCts?.Cancel();
+
+    private async Task Retry(MessageDisplay errorMessage)
+    {
+        var question = errorMessage.RetryQuestion;
+        if (question is null) return;
+
+        // Drop the failed exchange (the user prompt + the error) before asking again.
+        var index = messages.IndexOf(errorMessage);
+        if (index > 0 && messages[index - 1].Role == "user")
+            messages.RemoveAt(index - 1);
+        messages.Remove(errorMessage);
+
+        await Send(question);
+    }
+
+    private async Task Copy(MessageDisplay msg)
+    {
+        try
+        {
+            msg.Copied = await JS.InvokeAsync<bool>("doclyDom.copyText", msg.Content);
+            StateHasChanged();
+            await Task.Delay(1500);
+            msg.Copied = false;
+        }
+        catch { }
+    }
+
+    private static IEnumerable<SourceDoc> DistinctSources(List<SourceDoc> sources) =>
+        sources.GroupBy(s => s.DocumentId)
+               .Select(g => g.OrderByDescending(s => s.SimilarityScore ?? 0).First())
+               .OrderByDescending(s => s.SimilarityScore ?? 0);
+
+    private async Task SetQuestion(string question)
+    {
+        currentQuestion = question;
+        StateHasChanged();
+        await ResizeTextarea();
+        try { await JS.InvokeVoidAsync("doclyDom.focus", textareaRef); } catch { }
+    }
+
+    private async Task HandleTextareaInput(ChangeEventArgs e)
+    {
+        currentQuestion = e.Value?.ToString() ?? string.Empty;
+        await ResizeTextarea();
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey && !e.IsComposing)
+            await HandleSubmit();
+    }
+
+    private async Task ResizeTextarea()
+    {
+        try { await JS.InvokeVoidAsync("doclyDom.autoResize", textareaRef); } catch { }
+    }
+
+    private async Task ScrollToEnd(bool smooth = true)
+    {
+        await Task.Delay(30);
+        try { await JS.InvokeVoidAsync("doclyDom.scrollToBottom", scrollRef, smooth); } catch { }
+    }
+
+    public void Dispose() => sendCts?.Cancel();
+}

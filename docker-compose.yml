@@ -1,0 +1,76 @@
+# Runs the whole stack: PostgreSQL (pgvector), Ollama, the API and the web UI.
+#
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull nomic-embed-text
+#   docker compose exec ollama ollama pull llama3.1:8b
+#
+# Then open http://localhost:8081
+#
+# Put real secrets in a local .env file (git-ignored); see .env.example.
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: docassistant
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d docassistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    # Uncomment for NVIDIA GPUs:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=docassistant;Username=postgres;Password=${POSTGRES_PASSWORD}
+      Jwt__Key: ${JWT_KEY:?Set JWT_KEY in .env (32+ random characters)}
+      Ollama__BaseUrl: http://ollama:11434
+      Database__MigrateOnStartup: "true"
+      WebClientOrigins__0: ${WEB_ORIGIN:-http://localhost:8081}
+    ports:
+      - "8080:8080"
+    volumes:
+      - uploads:/data/uploads
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # Address of the API *as the browser sees it*.
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:8080}
+    ports:
+      - "8081:80"
+
+volumes:
+  pgdata:
+  ollama:
+  uploads:
